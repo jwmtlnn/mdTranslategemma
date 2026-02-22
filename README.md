@@ -1,7 +1,8 @@
 # mdTranslategemma
 
-**mdTranslategemma** is a completely vibecoded browser-based utility designed to translate large batches of Markdown (`.md`) files using a local **Ollama** instance running a [translategemma]([https://ollama.com/](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/) model. While optimized for the `translategemma` model, it should be compatible with various LLMs that follow standard translation prompt patterns. The tool runs entirely in your browser using the **File System Access API**, keeping your data in local environment.
+**mdTranslategemma** is a completely ✨vibecoded✨ browser-based utility designed to translate large batches of Markdown (`.md`) files using a local **Ollama** instance running a [translategemma](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/) model. While optimized for the `translategemma` model, it should be compatible with various LLMs that follow standard translation prompt patterns. The tool runs entirely in your browser using the **File System Access API**, keeping your data in local environment.
 
+---
 ## The Pipeline
 ### 1. File Scanning & Memory Loading
 * The user selects an **Input Folder** and an **Output Folder**.
@@ -24,6 +25,7 @@ The tool uses a "sliding window" approach to help the LLM understand the flow of
 * **Naming Convention:** Files are saved with an ISO suffix (e.g., `manual.md` → `manual_en.md`).
 * **Retry Logic:** If the Ollama API fails (or the user cancels), the tool tracks the current file index. Users can click **"Resume / Retry"** to pick up exactly where they left off without re-translating completed files.
 
+---
 ## Key Features
 * **Live Status Indicator:** A dynamic status symbol (`⚪ Idle`, `🟡 Translating`, `🔴 Error`) and progress bar provide real-time feedback on the API's activity.
 * **Optional Model Tuning:**
