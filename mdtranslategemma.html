@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mdTranslategemma</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 850px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: #333; }
+        .header-container { display: flex; justify-content: space-between; align-items: baseline; }
+        h1 { color: #2c3e50; margin-bottom: 1rem; }
+        .version { font-family: monospace; color: #6c757d; font-size: 0.9rem; font-weight: bold; }
+        .card { background: #f8f9fa; padding: 1.5rem; border-radius: 8px; margin-bottom: 1.5rem; border: 1px solid #dee2e6; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        
+        /* Progress Styles */
+        .progress-container { background: #eee; border-radius: 10px; height: 20px; width: 100%; margin: 10px 0 1.5rem 0; overflow: hidden; display: none; }
+        #progressBar { background: #28a745; height: 100%; width: 0%; transition: width 0.3s; }
+        #progressText { font-weight: bold; font-size: 0.9rem; margin-bottom: 5px; display: none; }
+
+        label { display: block; font-weight: bold; margin-bottom: 0.25rem; font-size: 0.9rem; }
+        input[type="text"], input[type="number"] { width: 100%; padding: 0.5rem; margin-bottom: 1rem; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        input[type="checkbox"] { margin-right: 5px; }
+        button { background: #007bff; color: white; border: none; padding: 0.75rem 1.5rem; font-size: 1rem; border-radius: 4px; cursor: pointer; transition: background 0.2s; margin-right: 0.5rem; margin-bottom: 0.5rem;}
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #btnCancel { background: #dc3545; }
+        #btnCancel:hover { background: #c82333; }
+        #btnRetry { background: #ffc107; color: #000; display: none; }
+        #btnRetry:hover { background: #e0a800; }
+        
+        .log-box { background: #1e1e1e; color: #00ff00; font-family: monospace; padding: 1rem; border-radius: 4px; height: 300px; overflow-y: auto; font-size: 0.85rem; }
+        .error { color: #ff4444; }
+        .warn { color: #ffc107; }
+        .hint { display: block; margin-top: -0.8rem; margin-bottom: 1rem; color: #666; font-size: 0.8rem; }
+        .path-display { font-family: monospace; background: #e9ecef; padding: 0.2rem 0.5rem; border-radius: 3px; font-size: 0.9rem;}
+        
+        #apiStatus { font-size: 0.9rem; font-weight: normal; padding-left: 15px; display: inline-block; }
+    </style>
+</head>
+<body>
+
+    <div class="header-container">
+        <h1>mdTranslategemma</h1>
+        <div class="version">v0.9</div>
+    </div>
+
+    <div class="card grid">
+        <div>
+            <label>Ollama URL</label>
+            <input type="text" id="ollamaUrl" value="http://localhost:11434">
+            <small class="hint">Make sure your Ollama accepts CORS (e.g., OLLAMA_ORIGINS=*).</small>
+        </div>
+        <div>
+            <label>Model</label>
+            <input type="text" id="modelName" value="translategemma:12b">
+            <small class="hint">Probably works with other models too, but the prompt is built for translategemma.</small>
+        </div>
+        <div>
+            <label>Source Language</label>
+            <input type="text" id="sourceLang" value="Finnish">
+            <small class="hint">Write source language name in natural English.</small>
+        </div>
+        <div>
+            <label>Source Language ISO Code</label>
+            <input type="text" id="sourceLangCode" value="fi" placeholder="e.g., fi, sv, fr">
+            <small class="hint">Used in the prompt.</small>
+        </div>
+        <div>
+            <label>Target Language</label>
+            <input type="text" id="targetLang" value="English">
+            <small class="hint">Write target language name in natural English.</small>
+        </div>
+        <div>
+            <label>Target Language ISO code</label>
+            <input type="text" id="targetLangCode" value="en" placeholder="e.g., en, fi, sv">
+            <small class="hint">Used in the prompt and output filenames (example_en.md).</small>
+        </div>
+        <div>
+            <label><input type="checkbox" id="useTemp" unchecked onchange="document.getElementById('temperature').disabled = !this.checked">Temperature</label>
+            <input type="number" id="temperature" value="0.4" step="0.1" min="0" max="1">
+            <small class="hint">Controls output randomness. Lower values (e.g., 0.1-0.3) make the translation more deterministic.</small>
+        </div>
+        <div>
+            <label><input type="checkbox" id="useRepeat" unchecked onchange="document.getElementById('repeatPenalty').disabled = !this.checked">Repetition Penalty</label>
+            <input type="number" id="repeatPenalty" value="1.02" step="0.01" min="1.0" max="2.0">
+            <small class="hint">Light penalty should generally work for translategemma.</small>
+        </div>
+        <div>
+            <label>Context Length (Tokens)</label>
+            <input type="number" id="contextLength" value="4096" step="4096">
+            <small class="hint">Sent to Ollama for initializing. Chunk size is auto-calculated based on (ctx/2-overlap-100). Chunks are approximated by your browser (4 characters = 1 token), not actually tokenizing.</small>
+        </div>
+        <div>
+            <label>Context Overlap (browser-approximated Tokens)</label>
+            <input type="number" id="overlapTokens" value="100" step="50">
+            <small class="hint">Overlap is read by the model to maintain context between chunks. Chunking tries to be smart not to break .md formatting.</small>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Directories</h3>
+        <p class="hint" style="margin-top:0;">Note: Browsers hide absolute paths for security. Only the selected folder name is visible.</p>
+        
+        <button id="btnInputDir" style="background-color: #6c757d;">1. Select Input Folder</button>
+        <span class="path-display" id="inputPath">None selected</span>
+        <br><br>
+        
+        <button id="btnOutputDir" style="background-color: #6c757d;">2. Select Output Folder</button>
+        <span class="path-display" id="outputPath">None selected</span>
+        <br><br>
+        
+        <button id="btnStart" disabled>3. Start Translation</button>
+        <button id="btnRetry">Resume / Retry</button>
+        <button id="btnCancel" disabled>Cancel Processing</button>
+    </div>
+
+    <div id="progressText">Files Processed: 0 / 0 (0%)</div>
+    <div class="progress-container" id="progressContainer">
+        <div id="progressBar"></div>
+    </div>
+
+    <h3>Activity Log <span id="apiStatus">⚪ Idle</span></h3>
+    <div class="log-box" id="logBox"></div>
+
+    <script>
+        let inputDirHandle = null;
+        let outputDirHandle = null;
+        let isCancelled = false;
+        
+        // Global state for Retries
+        let globalFilesToProcess = [];
+        let currentFileIndex = 0;
+
+        const log = (msg, type = 'info') => {
+            const logBox = document.getElementById('logBox');
+            const entry = document.createElement('div');
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            if (type === 'error') entry.className = 'error';
+            if (type === 'warn') entry.className = 'warn';
+            logBox.appendChild(entry);
+            logBox.scrollTop = logBox.scrollHeight;
+        };
+
+        const updateProgress = (current, total) => {
+            const container = document.getElementById('progressContainer');
+            const bar = document.getElementById('progressBar');
+            const text = document.getElementById('progressText');
+            if (total === 0) return;
+            container.style.display = 'block';
+            text.style.display = 'block';
+            const percent = Math.round((current / total) * 100);
+            bar.style.width = percent + '%';
+            text.textContent = `Files Processed: ${current} / ${total} (${percent}%)`;
+        };
+
+        const setApiStatus = (statusStr) => {
+            document.getElementById('apiStatus').innerHTML = statusStr;
+        };
+
+        document.getElementById('btnInputDir').addEventListener('click', async () => {
+            try {
+                inputDirHandle = await window.showDirectoryPicker({ mode: 'read' });
+                document.getElementById('inputPath').textContent = `./${inputDirHandle.name}/`;
+                checkReady();
+                // Reset state if a new folder is picked
+                globalFilesToProcess = [];
+                currentFileIndex = 0;
+                document.getElementById('btnRetry').style.display = 'none';
+            } catch (e) { log(`Error selecting input: ${e.message}`, 'error'); }
+        });
+
+        document.getElementById('btnOutputDir').addEventListener('click', async () => {
+            try {
+                outputDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                document.getElementById('outputPath').textContent = `./${outputDirHandle.name}/`;
+                checkReady();
+            } catch (e) { log(`Error selecting output: ${e.message}`, 'error'); }
+        });
+
+        document.getElementById('btnCancel').addEventListener('click', () => {
+            if (!document.getElementById('btnStart').disabled) return;
+            isCancelled = true;
+            log("Cancel requested... stopping after current chunk finishes.", 'warn');
+            document.getElementById('btnCancel').disabled = true;
+        });
+
+        const checkReady = () => {
+            document.getElementById('btnStart').disabled = !(inputDirHandle && outputDirHandle);
+        };
+
+        function estimateTokens(text) { return Math.ceil(text.length / 4); }
+
+        async function* getFiles(dirHandle, path = '') {
+            for await (const entry of dirHandle.values()) {
+                if (entry.kind === 'file' && entry.name.endsWith('.md')) {
+                    yield { fileHandle: entry, path: path + entry.name };
+                } else if (entry.kind === 'directory') {
+                    yield* getFiles(entry, path + entry.name + '/');
+                }
+            }
+        }
+
+        function smartMarkdownChunking(text, contextLength) {
+            const safetyMargin = 100;
+            const maxTokens = Math.floor(contextLength / 2) - safetyMargin; 
+            if (maxTokens <= 0) throw new Error("Context length is too small.");
+
+            const blocks = text.split('\n\n');
+            const chunks = [];
+            let currentChunkBlocks = [];
+            let currentTokens = 0;
+
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i] + (i < blocks.length - 1 ? '\n\n' : '');
+                const blockTokens = estimateTokens(block);
+
+                if (currentTokens + blockTokens > maxTokens && currentChunkBlocks.length > 0) {
+                    chunks.push(currentChunkBlocks.join(''));
+                    currentChunkBlocks = [block];
+                    currentTokens = blockTokens;
+                } else {
+                    currentChunkBlocks.push(block);
+                    currentTokens += blockTokens;
+                }
+            }
+            if (currentChunkBlocks.length > 0) chunks.push(currentChunkBlocks.join(''));
+            return chunks;
+        }
+
+        function getOverlapContext(previousChunk, overlapTokensLimit) {
+            if (!previousChunk) return "";
+            const blocks = previousChunk.split('\n\n');
+            let overlapBlocks = [];
+            let currentTokens = 0;
+            
+            for (let i = blocks.length - 1; i >= 0; i--) {
+                const block = blocks[i] + (i < blocks.length - 1 ? '\n\n' : '');
+                const tokens = estimateTokens(block);
+                if (currentTokens + tokens <= overlapTokensLimit) {
+                    overlapBlocks.unshift(block);
+                    currentTokens += tokens;
+                } else { break; }
+            }
+            return overlapBlocks.join('').trim();
+        }
+
+        async function ensureDirectoryExists(rootHandle, path) {
+            const parts = path.split('/');
+            parts.pop(); 
+            let currentHandle = rootHandle;
+            for (const part of parts) {
+                currentHandle = await currentHandle.getDirectoryHandle(part, { create: true });
+            }
+            return currentHandle;
+        }
+
+        async function translateChunk(chunk, contextText, config) {
+            setApiStatus('🟡 Translating...');
+            
+            let prompt = `You are a professional ${config.src} (${config.srcCode}) to ${config.tgt} (${config.tgtCode}) translator. Your goal is to accurately convey the meaning and nuances of the original ${config.src} text while adhering to ${config.tgt} grammar, vocabulary, and cultural sensitivities.\n`;
+            prompt += `You MUST respect the markdown formatting and do not alter it. Preserve all headers, links, code blocks, lists, and bold/italic text exactly as they are formatted.\n`;
+            prompt += `Produce only the ${config.tgt} translation, without any additional explanations or commentary. Please translate the following ${config.src} text into ${config.tgt}:\n\n`;
+
+            if (contextText) {
+                prompt += `--- PREVIOUS CONTEXT (DO NOT TRANSLATE THIS, use only to understand the flow) ---\n${contextText}\n\n`;
+            }
+            
+            prompt += `--- TEXT TO TRANSLATE ---\n${chunk}`;
+            
+            // Construct options payload dynamically
+            let apiOptions = { num_ctx: config.ctxLen };
+            if (config.useTemp) apiOptions.temperature = config.temperature;
+            if (config.useRepeat) apiOptions.repeat_penalty = config.repeatPenalty;
+
+            try {
+                const response = await fetch(`${config.url}/api/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: config.model,
+                        prompt: prompt,
+                        stream: false,
+                        options: apiOptions
+                    })
+                });
+
+                if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
+                const data = await response.json();
+                setApiStatus('🟢 Chunk Complete');
+                return data.response.trim();
+            } catch (error) {
+                setApiStatus('🔴 Error');
+                throw error;
+            }
+        }
+
+        async function runTranslationQueue(isRetry = false) {
+            const btnStart = document.getElementById('btnStart');
+            const btnCancel = document.getElementById('btnCancel');
+            const btnRetry = document.getElementById('btnRetry');
+            
+            btnStart.disabled = true;
+            btnCancel.disabled = false;
+            btnRetry.style.display = 'none';
+            btnStart.textContent = 'Translating...';
+            isCancelled = false;
+            setApiStatus('🟡 Preparing...');
+
+            const config = {
+                url: document.getElementById('ollamaUrl').value.replace(/\/$/, ''),
+                model: document.getElementById('modelName').value,
+                src: document.getElementById('sourceLang').value,
+                srcCode: document.getElementById('sourceLangCode').value.trim() || 'fi',
+                tgt: document.getElementById('targetLang').value,
+                tgtCode: document.getElementById('targetLangCode').value.trim() || 'en',
+                ctxLen: parseInt(document.getElementById('contextLength').value),
+                overlapTokens: parseInt(document.getElementById('overlapTokens').value),
+                
+                useTemp: document.getElementById('useTemp').checked,
+                temperature: parseFloat(document.getElementById('temperature').value),
+                
+                useRepeat: document.getElementById('useRepeat').checked,
+                repeatPenalty: parseFloat(document.getElementById('repeatPenalty').value)
+            };
+
+            try {
+                try {
+                    const testRes = await fetch(`${config.url}/api/tags`);
+                    if (!testRes.ok) throw new Error("Network response was not ok");
+                } catch (e) {
+                    throw new Error("Could not connect to Ollama. Please ensure Ollama is running and CORS is enabled.");
+                }
+
+                if (!isRetry || globalFilesToProcess.length === 0) {
+                    log("Scanning files and reading contents into memory to prevent stale handles...");
+                    globalFilesToProcess = [];
+                    currentFileIndex = 0;
+                    
+                    for await (const fileObj of getFiles(inputDirHandle)) {
+                        const file = await fileObj.fileHandle.getFile();
+                        const text = await file.text();
+                        globalFilesToProcess.push({ path: fileObj.path, text: text });
+                    }
+                }
+                
+                const totalFiles = globalFilesToProcess.length;
+                updateProgress(currentFileIndex, totalFiles);
+
+                if (totalFiles === 0) {
+                    log("No markdown (.md) files found in the selected folder.", 'warn');
+                    setApiStatus('⚪ Idle');
+                    return;
+                }
+
+                for (; currentFileIndex < totalFiles; currentFileIndex++) {
+                    if (isCancelled) break;
+                    
+                    const fileData = globalFilesToProcess[currentFileIndex];
+                    log(`Processing [${currentFileIndex + 1}/${totalFiles}]: ${fileData.path}`);
+                    
+                    const chunks = smartMarkdownChunking(fileData.text, config.ctxLen);
+                    let translatedText = "";
+                    let previousChunk = "";
+                    
+                    for (let i = 0; i < chunks.length; i++) {
+                        if (isCancelled) break;
+                        log(`  -> Translating chunk ${i + 1}/${chunks.length} (~${estimateTokens(chunks[i])} tokens)...`);
+                        
+                        const contextText = getOverlapContext(previousChunk, config.overlapTokens);
+                        const translatedChunk = await translateChunk(chunks[i], contextText, config);
+                        
+                        let cleanedChunk = translatedChunk.replace(/^--- TEXT TO TRANSLATE ---\n?/i, '');
+                        
+                        translatedText += cleanedChunk + "\n\n";
+                        previousChunk = chunks[i]; 
+                    }
+
+                    if (isCancelled) {
+                        log(`Translation paused by user.`, 'warn');
+                        btnRetry.style.display = 'inline-block';
+                        setApiStatus('⚪ Paused');
+                        break;
+                    }
+
+                    log(`  -> Saving translated file...`);
+                    const destDirHandle = await ensureDirectoryExists(outputDirHandle, fileData.path);
+                    const originalName = fileData.path.split('/').pop();
+                    const newFileName = originalName.replace(/\.md$/i, `_${config.tgtCode}.md`);
+                    
+                    const newFileHandle = await destDirHandle.getFileHandle(newFileName, { create: true });
+                    const writable = await newFileHandle.createWritable();
+                    await writable.write(translatedText.trim());
+                    await writable.close();
+                    
+                    updateProgress(currentFileIndex + 1, totalFiles);
+                    log(`Completed: ${newFileName}`);
+                    
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                
+                if (!isCancelled && currentFileIndex >= totalFiles && totalFiles > 0) {
+                    log('🎉 All files processed successfully!');
+                    setApiStatus('⚪ Complete');
+                    globalFilesToProcess = []; 
+                    currentFileIndex = 0;
+                }
+            } catch (error) {
+                log(`Error: ${error.message}`, 'error');
+                setApiStatus('🔴 Error');
+                btnRetry.style.display = 'inline-block';
+            } finally {
+                btnStart.disabled = false;
+                btnCancel.disabled = true;
+                btnStart.textContent = '3. Start Translation';
+            }
+        }
+
+        document.getElementById('btnStart').addEventListener('click', () => runTranslationQueue(false));
+        document.getElementById('btnRetry').addEventListener('click', () => runTranslationQueue(true));
+
+    </script>
+</body>
+</html>
