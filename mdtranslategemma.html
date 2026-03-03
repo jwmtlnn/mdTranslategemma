@@ -41,7 +41,7 @@
 
     <div class="header-container">
         <h1>mdTranslategemma</h1>
-        <div class="version">v0.9</div>
+        <div class="version">v1.1</div>
     </div>
 
     <div class="card grid">
@@ -53,7 +53,7 @@
         <div>
             <label>Model</label>
             <input type="text" id="modelName" value="translategemma:12b">
-            <small class="hint">Probably works with other models too, but the prompt is built for translategemma.</small>
+            <small class="hint">Most likely works with other models too, but the prompt is built for translategemma.</small>
         </div>
         <div>
             <label>Source Language</label>
@@ -76,30 +76,30 @@
             <small class="hint">Used in the prompt and output filenames (example_en.md).</small>
         </div>
         <div>
-            <label><input type="checkbox" id="useTemp" unchecked onchange="document.getElementById('temperature').disabled = !this.checked">Temperature</label>
-            <input type="number" id="temperature" value="0.4" step="0.1" min="0" max="1">
-            <small class="hint">Controls output randomness. Lower values (e.g., 0.1-0.3) make the translation more deterministic.</small>
+            <label><input type="checkbox" id="useTemp" onchange="document.getElementById('temperature').disabled = !this.checked">Temperature (0.0 - 1.0)</label>
+            <input type="number" id="temperature" value="0.4" step="0.1" min="0" max="1" disabled>
+            <small class="hint">Controls output randomness. Lower values (e.g., 0.1-0.3) make the translation more deterministic. Not always necessary setting for translategemma.</small>
         </div>
         <div>
-            <label><input type="checkbox" id="useRepeat" unchecked onchange="document.getElementById('repeatPenalty').disabled = !this.checked">Repetition Penalty</label>
-            <input type="number" id="repeatPenalty" value="1.02" step="0.01" min="1.0" max="2.0">
-            <small class="hint">Light penalty should generally work for translategemma.</small>
+            <label><input type="checkbox" id="useRepeat" onchange="document.getElementById('repeatPenalty').disabled = !this.checked">Repetition Penalty (1.0 - 2.0)</label>
+            <input type="number" id="repeatPenalty" value="1.02" step="0.01" min="1.0" max="2.0" disabled>
+            <small class="hint">Light penalty should generally work for translategemma. Not always necessary setting for translategemma.</small>
         </div>
         <div>
             <label>Context Length (Tokens)</label>
             <input type="number" id="contextLength" value="4096" step="4096">
-            <small class="hint">Sent to Ollama for initializing. Chunk size is auto-calculated based on (ctx/2-overlap-100). Chunks are approximated by your browser (4 characters = 1 token), not actually tokenizing.</small>
+            <small class="hint">Sent to Ollama for initializing. Chunk size is auto-calculated based on context to allow room for the translation ((ctx/2.25)-overlap-50). Chunking is done by estimating (4 characters = 1 token) by your browser, not actually tokenizing. Chunking tries to be smart not to break md formatting.</small>
         </div>
         <div>
-            <label>Context Overlap (browser-approximated Tokens)</label>
+            <label>Context Overlap (browser-estimated Tokens)</label>
             <input type="number" id="overlapTokens" value="100" step="50">
-            <small class="hint">Overlap is read by the model to maintain context between chunks. Chunking tries to be smart not to break .md formatting.</small>
+            <small class="hint">Overlapping text is read by the model to maintain context between chunks.</small>
         </div>
     </div>
 
     <div class="card">
         <h3>Directories</h3>
-        <p class="hint" style="margin-top:0;">Note: Browsers hide absolute paths for security. Only the selected folder name is visible.</p>
+        <p class="hint" style="margin-top:0;">Note: Browsers hide absolute paths for security. Only the selected folder name is visible. Only .md files are sent for translation.</p>
         
         <button id="btnInputDir" style="background-color: #6c757d;">1. Select Input Folder</button>
         <span class="path-display" id="inputPath">None selected</span>
@@ -126,6 +126,7 @@
         let inputDirHandle = null;
         let outputDirHandle = null;
         let isCancelled = false;
+        let abortController = null; // Added AbortController state
         
         // Global state for Retries
         let globalFilesToProcess = [];
@@ -180,7 +181,8 @@
         document.getElementById('btnCancel').addEventListener('click', () => {
             if (!document.getElementById('btnStart').disabled) return;
             isCancelled = true;
-            log("Cancel requested... stopping after current chunk finishes.", 'warn');
+            if (abortController) abortController.abort(); // Instantly kills the hanging fetch request
+            log("Cancel requested... aborting current chunk.", 'warn');
             document.getElementById('btnCancel').disabled = true;
         });
 
@@ -200,48 +202,75 @@
             }
         }
 
-        function smartMarkdownChunking(text, contextLength) {
-            const safetyMargin = 100;
-            const maxTokens = Math.floor(contextLength / 2) - safetyMargin; 
-            if (maxTokens <= 0) throw new Error("Context length is too small.");
-
-            const blocks = text.split('\n\n');
+        // Added overlapTokens parameter here
+        function smartMarkdownChunking(text, contextLength, overlapTokens) {
+            const safetyMargin = 50;
+            // Subtract overlapTokens from maxTokens so they don't blow past the limit together
+            const maxTokens = Math.floor(contextLength / 2.25) - safetyMargin - overlapTokens; 
+            if (maxTokens <= 0) throw new Error("Context length is too small or overlap is too large.");
+            
+            // Convert token limit to a character limit based on your 1 token = 4 chars estimate
+            const maxChars = maxTokens * 4; 
+            
             const chunks = [];
-            let currentChunkBlocks = [];
-            let currentTokens = 0;
+            let remainingText = text;
 
-            for (let i = 0; i < blocks.length; i++) {
-                const block = blocks[i] + (i < blocks.length - 1 ? '\n\n' : '');
-                const blockTokens = estimateTokens(block);
-
-                if (currentTokens + blockTokens > maxTokens && currentChunkBlocks.length > 0) {
-                    chunks.push(currentChunkBlocks.join(''));
-                    currentChunkBlocks = [block];
-                    currentTokens = blockTokens;
-                } else {
-                    currentChunkBlocks.push(block);
-                    currentTokens += blockTokens;
+            while (remainingText.length > 0) {
+                // If the remaining text fits entirely, push it and we're done
+                if (remainingText.length <= maxChars) {
+                    chunks.push(remainingText);
+                    break;
                 }
+
+                // Look backwards from the max character limit to find a safe place to cut
+                let splitIndex = maxChars;
+
+                // Fallback hierarchy: Double newline -> Single newline -> Sentence end -> Space
+                const lastDoubleNewline = remainingText.lastIndexOf('\n\n', maxChars);
+                const lastNewline = remainingText.lastIndexOf('\n', maxChars);
+                const lastPeriod = remainingText.lastIndexOf('. ', maxChars);
+                const lastSpace = remainingText.lastIndexOf(' ', maxChars);
+
+                if (lastDoubleNewline > 0) {
+                    splitIndex = lastDoubleNewline + 2; // Include newlines
+                } else if (lastNewline > 0) {
+                    splitIndex = lastNewline + 1;
+                } else if (lastPeriod > 0) {
+                    splitIndex = lastPeriod + 2;
+                } else if (lastSpace > 0) {
+                    splitIndex = lastSpace + 1;
+                }
+
+                chunks.push(remainingText.substring(0, splitIndex));
+                remainingText = remainingText.substring(splitIndex);
             }
-            if (currentChunkBlocks.length > 0) chunks.push(currentChunkBlocks.join(''));
+
             return chunks;
         }
 
         function getOverlapContext(previousChunk, overlapTokensLimit) {
             if (!previousChunk) return "";
-            const blocks = previousChunk.split('\n\n');
-            let overlapBlocks = [];
-            let currentTokens = 0;
             
-            for (let i = blocks.length - 1; i >= 0; i--) {
-                const block = blocks[i] + (i < blocks.length - 1 ? '\n\n' : '');
-                const tokens = estimateTokens(block);
-                if (currentTokens + tokens <= overlapTokensLimit) {
-                    overlapBlocks.unshift(block);
-                    currentTokens += tokens;
-                } else { break; }
+            const maxChars = overlapTokensLimit * 4;
+            if (previousChunk.length <= maxChars) return previousChunk.trim();
+
+            // Extract the tail end of the previous chunk
+            let overlapStr = previousChunk.slice(-maxChars);
+            
+            // Snap to a clean boundary so we don't start mid-word/sentence
+            const firstNewline = overlapStr.indexOf('\n');
+            const firstPeriod = overlapStr.indexOf('. ');
+            const firstSpace = overlapStr.indexOf(' ');
+
+            if (firstNewline !== -1 && firstNewline < maxChars / 3) {
+                overlapStr = overlapStr.substring(firstNewline + 1);
+            } else if (firstPeriod !== -1 && firstPeriod < maxChars / 3) {
+                overlapStr = overlapStr.substring(firstPeriod + 2);
+            } else if (firstSpace !== -1) {
+                overlapStr = overlapStr.substring(firstSpace + 1);
             }
-            return overlapBlocks.join('').trim();
+            
+            return overlapStr.trim();
         }
 
         async function ensureDirectoryExists(rootHandle, path) {
@@ -254,7 +283,7 @@
             return currentHandle;
         }
 
-        async function translateChunk(chunk, contextText, config) {
+        async function translateChunk(chunk, contextText, config, signal) {
             setApiStatus('🟡 Translating...');
             
             let prompt = `You are a professional ${config.src} (${config.srcCode}) to ${config.tgt} (${config.tgtCode}) translator. Your goal is to accurately convey the meaning and nuances of the original ${config.src} text while adhering to ${config.tgt} grammar, vocabulary, and cultural sensitivities.\n`;
@@ -276,6 +305,7 @@
                 const response = await fetch(`${config.url}/api/generate`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    signal: signal, // Attach the abort signal here
                     body: JSON.stringify({
                         model: config.model,
                         prompt: prompt,
@@ -289,6 +319,10 @@
                 setApiStatus('🟢 Chunk Complete');
                 return data.response.trim();
             } catch (error) {
+                if (error.name === 'AbortError') {
+                    setApiStatus('⚪ Aborted');
+                    throw error; // Re-throw to be caught by the runTranslationQueue block
+                }
                 setApiStatus('🔴 Error');
                 throw error;
             }
@@ -305,6 +339,8 @@
             btnStart.textContent = 'Translating...';
             isCancelled = false;
             setApiStatus('🟡 Preparing...');
+
+            abortController = new AbortController(); // Initialize fresh controller
 
             const config = {
                 url: document.getElementById('ollamaUrl').value.replace(/\/$/, ''),
@@ -358,7 +394,8 @@
                     const fileData = globalFilesToProcess[currentFileIndex];
                     log(`Processing [${currentFileIndex + 1}/${totalFiles}]: ${fileData.path}`);
                     
-                    const chunks = smartMarkdownChunking(fileData.text, config.ctxLen);
+                    // Passing config.overlapTokens here!
+                    const chunks = smartMarkdownChunking(fileData.text, config.ctxLen, config.overlapTokens);
                     let translatedText = "";
                     let previousChunk = "";
                     
@@ -367,7 +404,8 @@
                         log(`  -> Translating chunk ${i + 1}/${chunks.length} (~${estimateTokens(chunks[i])} tokens)...`);
                         
                         const contextText = getOverlapContext(previousChunk, config.overlapTokens);
-                        const translatedChunk = await translateChunk(chunks[i], contextText, config);
+                        // Pass the signal to translateChunk
+                        const translatedChunk = await translateChunk(chunks[i], contextText, config, abortController.signal);
                         
                         let cleanedChunk = translatedChunk.replace(/^--- TEXT TO TRANSLATE ---\n?/i, '');
                         
@@ -405,9 +443,16 @@
                     currentFileIndex = 0;
                 }
             } catch (error) {
-                log(`Error: ${error.message}`, 'error');
-                setApiStatus('🔴 Error');
-                btnRetry.style.display = 'inline-block';
+                if (error.name === 'AbortError') {
+                    // Handled as a purposeful cancellation rather than an unexpected error
+                    log(`Translation aborted by user.`, 'warn');
+                    setApiStatus('⚪ Paused');
+                    btnRetry.style.display = 'inline-block';
+                } else {
+                    log(`Error: ${error.message}`, 'error');
+                    setApiStatus('🔴 Error');
+                    btnRetry.style.display = 'inline-block';
+                }
             } finally {
                 btnStart.disabled = false;
                 btnCancel.disabled = true;
