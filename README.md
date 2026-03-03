@@ -11,8 +11,8 @@
 
 ### 2. Markdown Chunking
 To stay within the specified `Context Length`, the tool splits documents into manageable pieces.
-* **Context Window:** It calculates the maximum chunk size based on `(Context Length / 2) - Margin`. This leaves enough "room" in the model's memory for the system instructions and the generated translation.
-* **Split Logic:** Instead of cutting text at a random character count, it splits by double newlines (`\n\n`). This ensures that paragraphs, list items, and tables are sent as whole units whenever possible.
+* **Context Window:** It calculates the maximum chunk size based on `(Context Length / 2,25) - Overlap - Margin`. This leaves enough room in the model's ctx memory for the system instructions and the generated translation.
+* **Split Logic:** Instead of cutting text at a random character count, it splits by newlines (`\n`). This ensures that paragraphs, list items, and tables are sent as whole units whenever possible.
 
 ### 3. Translation with Sliding Context
 The tool uses a "sliding window" approach to help the LLM understand the flow of the document:
